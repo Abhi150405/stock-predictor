@@ -13,12 +13,14 @@ import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import google.generativeai as genai
 from yahoo_fin import news
+from dotenv import load_dotenv
 
 # Download necessary NLTK data
 nltk.download("vader_lexicon")
 
 # Initialize Google Gemini API
-GEMINI_API_KEY = "AIzaSyCg6b34yh04SOvhSnxc5m5ComJKaPTc0oI"  # Replace with your API key
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 gemini_model = genai.GenerativeModel("models/gemini-1.5-pro")
 
