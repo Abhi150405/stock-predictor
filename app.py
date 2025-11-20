@@ -8,47 +8,77 @@ from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense
 import plotly.graph_objects as go
 import plotly.express as px
-import os
 import nltk
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
 import google.generativeai as genai
 from yahoo_fin import news
-from dotenv import load_dotenv
+import os
 
-# Download necessary NLTK data
+# Download required NLTK data
 nltk.download("vader_lexicon")
 
-# Initialize Google Gemini API
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# ------------------------------------------------------------
+# 🔐 GEMINI API INITIALIZATION WITH MODEL FALLBACK
+# ------------------------------------------------------------
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=GEMINI_API_KEY)
-gemini_model = genai.GenerativeModel("models/gemini-1.5-pro")
 
-# Streamlit UI setup
+model_names = [
+    "gemini-2.5-flash-lite",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
+    "gemini-pro",
+    "models/gemini-2.5-flash-lite",
+    "models/gemini-1.5-pro",
+    "models/gemini-1.5-flash",
+    "models/gemini-pro"
+]
+
+gemini_model = None
+
+for name in model_names:
+    try:
+        test_model = genai.GenerativeModel(name)
+        test_model.generate_content("test")
+        gemini_model = test_model
+        print(f"Using Gemini model: {name}")
+        break
+    except:
+        continue
+
+if gemini_model is None:
+    st.error("❌ No Gemini model available. Check your API key or model access.")
+    st.stop()
+
+# ------------------------------------------------------------
+# 🖥️ STREAMlit UI
+# ------------------------------------------------------------
 st.set_page_config(page_title="TradeVision - Real-time Stock Analyzer", layout="wide")
 st.title("📈 TradeVision - Real-time Stock Analyzer")
 
-# Sidebar user inputs
 ticker = st.sidebar.text_input("Enter Stock Ticker (e.g., AAPL, TSLA, GOOG):", "AAPL").upper()
 future_days = st.sidebar.slider("Days to Predict:", 1, 30, 7)
 
-# Load sentiment analyzer
 sia = SentimentIntensityAnalyzer()
 
-# Cache stock data fetching
+# ------------------------------------------------------------
+# 📥 Fetch Stock Data
+# ------------------------------------------------------------
 @st.cache_data
 def fetch_stock_data(ticker):
     return yf.download(ticker, period="2y")
 
 stock_data = fetch_stock_data(ticker)
+
 if stock_data.empty:
     st.sidebar.error("Invalid Ticker! Enter a valid stock symbol.")
     st.stop()
 
-# Sidebar confirmation
 st.sidebar.success(f"Data for {ticker} loaded!")
 
-# Data preprocessing
+# ------------------------------------------------------------
+# 🔧 Data Preprocessing
+# ------------------------------------------------------------
 scaler = MinMaxScaler()
 stock_data['Scaled_Close'] = scaler.fit_transform(stock_data[['Close']])
 
@@ -62,13 +92,17 @@ def create_sequences(data, time_step=50):
 time_step = 50
 dataset = stock_data['Scaled_Close'].values.reshape(-1, 1)
 X, Y = create_sequences(dataset, time_step)
+
 train_size = int(len(X) * 0.8)
 X_train, Y_train = X[:train_size], Y[:train_size]
 X_test, Y_test = X[train_size:], Y[train_size:]
+
 X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
 X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
-# Model path
+# ------------------------------------------------------------
+# 🧠 Build or Load LSTM Model
+# ------------------------------------------------------------
 model_path = f"{ticker}_lstm_model.h5"
 
 def build_lstm_model():
@@ -81,7 +115,6 @@ def build_lstm_model():
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
 
-# Load or train model
 if os.path.exists(model_path):
     model = load_model(model_path)
 else:
@@ -90,28 +123,36 @@ else:
         model.fit(X_train, Y_train, epochs=10, batch_size=16, verbose=0)
         model.save(model_path)
 
-# Predictions
+# ------------------------------------------------------------
+# 📉 Predictions
+# ------------------------------------------------------------
 Y_pred = model.predict(X_test)
 Y_pred = scaler.inverse_transform(Y_pred.reshape(-1, 1))
 Y_test = scaler.inverse_transform(Y_test.reshape(-1, 1))
 
-# Model performance metrics
+# ------------------------------------------------------------
+# 📊 Model Metrics
+# ------------------------------------------------------------
 st.subheader("📊 Model Accuracy Metrics")
 st.write(f"🔹 Mean Squared Error (MSE): {mean_squared_error(Y_test, Y_pred):.4f}")
 st.write(f"🔹 Mean Absolute Error (MAE): {mean_absolute_error(Y_test, Y_pred):.4f}")
 
-# Plot actual vs predicted values
+# ------------------------------------------------------------
+# 📈 Actual vs Predicted Plot
+# ------------------------------------------------------------
 st.subheader("📈 Actual vs Predicted Stock Prices")
-fig_actual_predicted = go.Figure()
-fig_actual_predicted.add_trace(go.Scatter(x=stock_data.index[-len(Y_test):], y=Y_test.flatten(),
-                                          mode='lines', name='Actual Price', line=dict(color='blue')))
-fig_actual_predicted.add_trace(go.Scatter(x=stock_data.index[-len(Y_test):], y=Y_pred.flatten(),
-                                          mode='lines', name='Predicted Price', line=dict(color='red', dash='dot')))
-fig_actual_predicted.update_layout(title=f"Actual vs Predicted Prices ({ticker})",
-                                   xaxis_title="Date", yaxis_title="Stock Price (USD)")
-st.plotly_chart(fig_actual_predicted)
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=stock_data.index[-len(Y_test):], y=Y_test.flatten(),
+                         mode='lines', name='Actual Price', line=dict(color='blue')))
+fig.add_trace(go.Scatter(x=stock_data.index[-len(Y_test):], y=Y_pred.flatten(),
+                         mode='lines', name='Predicted Price', line=dict(color='red', dash='dot')))
+fig.update_layout(title=f"Actual vs Predicted Prices ({ticker})",
+                  xaxis_title="Date", yaxis_title="Stock Price (USD)")
+st.plotly_chart(fig)
 
-# Predict future prices
+# ------------------------------------------------------------
+# 🔮 Future Predictions
+# ------------------------------------------------------------
 def predict_future_prices(model, last_50_days, future_days):
     future_predictions = []
     current_input = last_50_days.reshape(1, -1, 1)
@@ -123,43 +164,56 @@ def predict_future_prices(model, last_50_days, future_days):
 
 last_50_days = dataset[-time_step:]
 future_prices = predict_future_prices(model, last_50_days, future_days)
+
 future_dates = pd.date_range(stock_data.index[-1] + pd.Timedelta(days=1), periods=future_days)
 future_df = pd.DataFrame({'Date': future_dates, 'Predicted_Close': future_prices.flatten()})
+
 st.subheader(f"📅 Predicted Stock Prices for Next {future_days} Days")
 st.dataframe(future_df)
 
-# Fetch and analyze stock news
+# ------------------------------------------------------------
+# 📰 Fetch Stock News
+# ------------------------------------------------------------
 def fetch_stock_news(stock_name):
     try:
-        news_articles = news.get_yf_rss(stock_name)
-        return "\n".join([article['title'] for article in news_articles[:5]])
-    except Exception:
+        articles = news.get_yf_rss(stock_name)
+        return "\n".join([article['title'] for article in articles[:5]])
+    except:
         return "No news found."
 
 stock_news = fetch_stock_news(ticker)
+
 st.subheader(f"📰 Latest News for {ticker}")
 for article in news.get_yf_rss(ticker)[:5]:
-    st.write(f"📰 {article['title']}\n🔗 {article['link']}\n")
+    st.write(f"📰 {article['title']}")
+    st.write(f"🔗 {article['link']}")
 
-# Sentiment Analysis
+# ------------------------------------------------------------
+# 🤖 Gemini AI Insights
+# ------------------------------------------------------------
 def get_gemini_insights(news_text):
     prompt = f"Summarize the following stock news and provide key takeaways:\n\n{news_text}"
     try:
         response = gemini_model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error fetching insights from Gemini AI: {e}"
+        return f"Error fetching insights: {e}"
 
 insights = get_gemini_insights(stock_news)
 sentiment = sia.polarity_scores(stock_news)
+
 st.subheader(f"📊 Sentiment Analysis & AI Insights for {ticker}")
 st.write(f"Gemini AI Insights:\n{insights}")
 
-# Pie chart for sentiment distribution
+# ------------------------------------------------------------
+# 🥧 Sentiment Pie Chart
+# ------------------------------------------------------------
 sentiment_labels = ["Positive", "Neutral", "Negative"]
 sentiment_values = [sentiment["pos"], sentiment["neu"], sentiment["neg"]]
+
 fig_pie = px.pie(values=sentiment_values, names=sentiment_labels, title="Sentiment Distribution")
 st.plotly_chart(fig_pie)
 
+# Sidebar About
 st.sidebar.markdown("### About TradeVision")
 st.sidebar.info("TradeVision provides real-time stock analysis using AI-powered prediction models and sentiment analysis.")

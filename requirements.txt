@@ -10,5 +10,3 @@ fake_useragent
 nltk
 plotly
 google-generativeai
-python-dotenv
-
